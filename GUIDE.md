@@ -146,7 +146,15 @@
 
 ## 三、token 自动同步（macOS）
 
-仓库已提供 `tools/sync_tokens.sh`，无需自行编写。它会依次读取 WorkBuddy / TRAE / Qoder 的本地登录态，校验 JWT 是否过期，再推送到 Secrets。
+仓库已提供 `tools/sync_tokens.sh`，无需自行编写。它会依次读取 WorkBuddy / TRAE / Qoder 的本地登录态并推送到 Secrets。
+
+三个产品的过期处理已经统一：剩余不足 2 天时，脚本会在后台静默唤起对应客户端（`open -gj -a ...`）触发刷新，并轮询凭据文件等待 `expiresAt` 前移；刷新失败或 token 已过期时记 `ERROR` 并跳过推送，不会再推死 token。
+
+- WorkBuddy：`auth.expiresAt`（毫秒时间戳），读取 `Tencent-Cloud.coding-copilot.info` 明文 `accessToken`
+- TRAE：`expiredAt`（ISO8601），由 `decrypt_trae_token.py` 解密后判断
+- Qoder：`expiresAt`（ISO8601），token 是不透明字符串（`dt-` 前缀），只能靠文件时间判断
+
+可用 `TOKEN_NEAR_EXPIRY_DAYS` / `TOKEN_REFRESH_TIMEOUT` 调整“临近”天数与等待秒数（默认 2 天 / 45 秒）。
 
 ### 使用
 

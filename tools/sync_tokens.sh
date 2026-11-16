@@ -51,28 +51,10 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始同步 → $REPO"
 #   2. workbuddy-desktop.info 明文 accessToken（旧版本格式）
 #   3. CDP 调试端口（前两者都读不到时，需 WorkBuddy 以 --remote-debugging-port 启动）
 # 5.9.2 起 workbuddy-desktop.info 中的 token 会被写成 $wbEncrypted 加密信封，无法直接读取。
-WB_TOKEN=$("$PYTHON_BIN" - "$WB_AUTH_DIR/Tencent-Cloud.coding-copilot.info" "$WB_AUTH_DIR/workbuddy-desktop.info" <<'PY' 2>/dev/null
-import base64, datetime, json, sys
-
-for path in sys.argv[1:]:
-    try:
-        token = json.load(open(path))['auth']['accessToken']
-    except Exception:
-        continue
-    if not isinstance(token, str) or not token.startswith('eyJ') or token.count('.') != 2:
-        continue
-    try:
-        body = token.split('.')[1]
-        body += '=' * (-len(body) % 4)
-        exp = json.loads(base64.urlsafe_b64decode(body)).get('exp', 0)
-    except Exception:
-        exp = 0
-    if exp and exp < datetime.datetime.now().timestamp():
-        continue
-    print(token)
-    sys.exit(0)
-PY
-)
+# 剩余不足 2 天时会自动在后台唤起 WorkBuddy 刷新；刷新失败则记 ERROR 并跳过推送。
+export WB_AUTH_DIR
+WB_ERR=$(mktemp)
+WB_TOKEN=$("$PYTHON_BIN" "$PROJECT/tools/decrypt_workbuddy_token.py" --ensure-fresh --stdout 2>"$WB_ERR" | tail -1)
 
 if [ -z "$WB_TOKEN" ] && curl -s --max-time 2 "http://127.0.0.1:${WB_CDP_PORT:-9222}/json/version" >/dev/null 2>&1; then
     WB_TOKEN=$("$NODE_BIN" "$PROJECT/tools/extract_workbuddy_token_cdp.js" "${WB_CDP_PORT:-9222}" 2>/dev/null)
@@ -86,11 +68,14 @@ if [ -n "$WB_TOKEN" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR WORKBUDDY_ACCESS_TOKEN 推送失败"
     fi
 else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR 读取 WorkBuddy token 失败（三个来源均不可用，签到会中断，请检查 WorkBuddy 是否已登录）"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR WorkBuddy token 不可用：$(tail -1 "$WB_ERR" 2>/dev/null)"
 fi
+rm -f "$WB_ERR"
 
 # TRAE：byteCrypto 解密后的 JWT
-TRAE_TOKEN=$("$PYTHON_BIN" "$PROJECT/tools/decrypt_trae_token.py" --stdout 2>/dev/null | tail -1)
+# 剩余不足 2 天时会自动在后台唤起 Trae CN 刷新；刷新失败则记 ERROR 并跳过推送。
+TRAE_ERR=$(mktemp)
+TRAE_TOKEN=$("$PYTHON_BIN" "$PROJECT/tools/decrypt_trae_token.py" --ensure-fresh --stdout 2>"$TRAE_ERR" | tail -1)
 if [ -n "$TRAE_TOKEN" ]; then
     if printf '%s' "$TRAE_TOKEN" | gh secret set TRAE_JWT --repo "$REPO" 2>&1; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] TRAE_JWT 已更新（${#TRAE_TOKEN} 字符）"
@@ -98,11 +83,15 @@ if [ -n "$TRAE_TOKEN" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR TRAE_JWT 推送失败（网络不通？）"
     fi
 else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR 解密 TRAE token 失败（客户端未登录？）"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR TRAE token 不可用：$(tail -1 "$TRAE_ERR" 2>/dev/null)"
 fi
+rm -f "$TRAE_ERR"
 
 # Qoder CN：Electron safeStorage 解密后的 token
-QODER_TOKEN=$("$PYTHON_BIN" "$PROJECT/tools/decrypt_qoder_token.py" --stdout 2>/dev/null | tail -1)
+# token 为不透明字符串（dt- 前缀），无法从字符串本身判断有效期，改用文件里的 expiresAt；
+# 剩余不足 2 天时自动唤起客户端刷新，避免把将过期的 token 推上去。
+QODER_ERR=$(mktemp)
+QODER_TOKEN=$("$PYTHON_BIN" "$PROJECT/tools/decrypt_qoder_token.py" --ensure-fresh --stdout 2>"$QODER_ERR" | tail -1)
 if [ -n "$QODER_TOKEN" ]; then
     if printf '%s' "$QODER_TOKEN" | gh secret set QODER_TOKEN --repo "$REPO" 2>&1; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] QODER_TOKEN 已更新（${#QODER_TOKEN} 字符）"
@@ -110,7 +99,8 @@ if [ -n "$QODER_TOKEN" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR QODER_TOKEN 推送失败（网络不通？）"
     fi
 else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR 解密 Qoder token 失败（客户端未登录？）"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR Qoder token 不可用：$(tail -1 "$QODER_ERR" 2>/dev/null)"
 fi
+rm -f "$QODER_ERR"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 同步结束"

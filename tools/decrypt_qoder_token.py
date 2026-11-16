@@ -8,15 +8,18 @@
   明文为 JSON: { token, refreshToken, expiresAt, refreshTokenExpiresAt, user }
 
 用法:
-  python3 decrypt_qoder_token.py            # 打印 token 信息
-  python3 decrypt_qoder_token.py --stdout   # 仅输出 token（供 sync 脚本读取）
-  python3 decrypt_qoder_token.py --pbcopy   # 复制 token 到剪贴板
+  python3 decrypt_qoder_token.py                    # 打印 token 信息
+  python3 decrypt_qoder_token.py --stdout           # 仅输出 token（供 sync 脚本读取）
+  python3 decrypt_qoder_token.py --ensure-fresh     # 临近过期时唤起客户端刷新后再输出
+  python3 decrypt_qoder_token.py --pbcopy           # 复制 token 到剪贴板
 """
 import hashlib
 import json
 import os
 import subprocess
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 
 KEYCHAIN_SERVICE = 'Qoder CN App Safe Storage'
 AUTH_FILE = os.path.expanduser('~/Library/Application Support/com.qodercn.app.stable/auth.v1.dat')
@@ -24,6 +27,47 @@ PBKDF2_SALT = b'saltysalt'
 PBKDF2_ITER = 1003
 PBKDF2_DKLEN = 16
 AES_IV = bytes([0x20] * 16)
+
+APP_NAME = 'Qoder CN'
+NEAR_EXPIRY = timedelta(days=2)
+REFRESH_TIMEOUT = int(os.environ.get('QODER_REFRESH_TIMEOUT', '45'))
+
+
+def parse_iso(ts):
+    """解析客户端写入的 ISO8601 时间，无法解析时返回 None。"""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def ensure_fresh(auth_path, auth):
+    """token 临近或已经过期时唤起客户端，等待其自动刷新，返回最新的 auth。"""
+    exp = parse_iso(auth.get('expiresAt'))
+    now = datetime.now(timezone.utc)
+    if exp is None or exp > now + NEAR_EXPIRY:
+        return auth
+
+    print(f'[INFO] token 将于 {auth.get("expiresAt")} 过期，唤起 {APP_NAME} 刷新', file=sys.stderr)
+    subprocess.run(['open', '-gj', '-a', APP_NAME], check=False)
+
+    latest = auth
+    deadline = time.time() + REFRESH_TIMEOUT
+    while time.time() < deadline:
+        time.sleep(3)
+        try:
+            candidate = decrypt(auth_path)
+        except SystemExit:
+            continue
+        new_exp = parse_iso(candidate.get('expiresAt'))
+        if new_exp and (exp is None or new_exp > exp):
+            print('[INFO] 客户端已刷新 token', file=sys.stderr)
+            return candidate
+        latest = candidate
+    return latest
+
 
 
 def get_keychain_password():
@@ -78,6 +122,18 @@ def main():
             auth_path = sys.argv[i + 1]
 
     auth = decrypt(auth_path)
+
+    if '--ensure-fresh' in sys.argv:
+        auth = ensure_fresh(auth_path, auth)
+        exp = parse_iso(auth.get('expiresAt'))
+        if exp and exp <= datetime.now(timezone.utc):
+            print(
+                f'ERROR Qoder token 已过期（{auth.get("expiresAt")}）且客户端未自动刷新，'
+                f'请手动打开 {APP_NAME} 重新登录',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     token = auth.get('token', '')
     if not token:
         print('ERROR 解密成功但未找到 token 字段')
