@@ -45,6 +45,10 @@ function main() {
     process.stdout.write(auth.token);
     return;
   }
+  if (process.argv.includes('--info-json')) {
+    process.stdout.write(JSON.stringify({ expiresAt: auth.expiresAt, length: auth.token.length }));
+    return;
+  }
   console.log('token 长度:', auth.token.length);
   console.log('过期时间:', auth.expiresAt);
   console.log('用户 ID:', auth.user && auth.user.id);
